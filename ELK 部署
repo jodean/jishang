@@ -1,0 +1,165 @@
+ELK 部署
+
+## 部署nginx
+$ echo -e "deb http://nginx.org/packages/ubuntu/ $(lsb_release -cs) nginx\ndeb-src http://nginx.org/packages/ubuntu/ $(lsb_release -cs) nginx" | sudo tee /etc/apt/sources.list.d/nginx.list
+$ wget -O- http://nginx.org/keys/nginx_signing.key | sudo apt-key add -
+$ sudo apt update && sudo apt install nginx apache2-utils
+## 更多参考：http://nginx.org/en/linux_packages.html#stable
+ 
+$ sudo touch /etc/nginx/htpasswd && sudo htpasswd /etc/nginx/htpasswd spark
+New password:
+Re-type new password:
+Adding password for user spark
+ 
+$ sudo vi /etc/nginx/conf.d/elk.conf
+upstream kibana {
+    server localhost:5601;
+}
+upstream elasticsearch {
+    server localhost:9200;
+}
+upstream elasticsearch-head {
+    server localhost:9100;
+}
+server {
+    listen  80;
+    server_name kibana.sparkprod;
+    location / {
+        proxy_pass http://kibana;
+        auth_basic "login required";
+        auth_basic_user_file htpasswd;
+    }
+}
+server {
+    listen  80;
+    server_name es.sparkprod;
+    location / {
+        proxy_pass http://elasticsearch;
+    }
+}
+server {
+    listen  80;
+    server_name head.sparkprod;
+    location / {
+        proxy_pass http://elasticsearch-head;
+        auth_basic "login required";
+        auth_basic_user_file htpasswd;
+    }
+}
+
+ 
+## 部署 ElasticSearch-head
+$ sudo apt install git nodejs-legacy npm
+$ git clone git://github.com/mobz/elasticsearch-head.git /home/ubuntu/elasticsearch-head
+$ vi /home/ubuntu/elasticsearch-head/_site/app.js
+this.base_uri = this.config.base_uri || this.prefs.get("app-base_uri") || "http://es.sparkmaster";
+$ cd /home/ubuntu/elasticsearch-head && sudo npm install
+$ sudo vi /home/ubuntu/elasticsearch-head.service
+[Unit]
+Description=elasticsearch-head
+ 
+[Service]
+ExecStart=/bin/sh -c 'cd /home/ubuntu/elasticsearch-head && node_modules/grunt/bin/grunt server'
+User=ubuntu
+Group=ubuntu
+ 
+[Install]
+WantedBy=multi-user.target
+ 
+$ sudo systemctl enable /home/ubuntu/elasticsearch-head.service
+$ sudo service elasticsearch-head start
+ 
+## 下载及部署ELK（略）
+$ sudo dpkg -i *.deb
+ 
+## 配置 ElasticSearch
+$ sudo vi /etc/elasticsearch/elasticsearch.yml
+cluster.name: mycluster
+node.name: sparkmaster
+path.data: /var/lib/elasticsearch
+network.host: 0.0.0.0
+http.port: 9200
+http.cors.allow-origin: /https?:\/\/.*sparkmaster(:[0-9]+)?/
+http.cors.enabled: true
+ 
+$ sudo mv /var/lib/elasticsearch /data/
+$ sudo ln -s /data/elasticsearch /var/lib/elasticsearch
+$ sudo service elasticsearch start
+ 
+## 配置 Logstash
+$ sudo vi /etc/logstash/logstash.yml
+path.data: /var/lib/logstash
+path.config: /etc/logstash/conf.d
+path.logs: /var/log/logstash
+ 
+$ sudo vi /etc/logstash/conf.d/02-filebeats.conf
+input {
+  beats {
+    port => 5044
+  }
+}
+filter {
+  if [fields][type] == "spark" {
+    grok {
+      ### <pattern>%d{yy/MM/dd HH:mm:ss.SSS} %-5p [%t] %c: %m%n</pattern>
+      match => { "message" => "(((?<Y>\d{2,4})[-/.]?)?((?<M>\d{1,2})[-/.]?)(?<D>\d{1,2}))?[\D]?(?<h>\d{1,2})?(:?(?<m>\d{1,2}))?(:?(?<s>\d{1,2}))?(\.(?<sss>\d{1,3}))? +%{LOGLEVEL:loglevel} +\[(?<thread>[^\]\r\n]+)\]( +(?<logger>[^:\r\n]+):)?( *\[(?<module>[^\] \r\n]+)\])?( *(?<title>[^: \r\n]+):)? *%{GREEDYDATA:message}" }
+      overwrite => [ "message" ]
+      add_field => { "logdate" => "20%{Y}-%{M}-%{D}T%{h}:%{m}:%{s}.%{sss}+08:00" }
+    }
+  
+    date {
+      match => [ "logdate" , "yyyy-MM-dd'T'HH:mm:ss.SSSZZ" ]
+      remove_field => [ "Y", "M", "D", "h", "m", "s", "sss", "logdate" ]
+    }
+  
+    mutate {
+      remove_field => [ "[fields][type]", "[beat][hostname]", "[beat][name]", "[beat][version]", "[prospector][type]", "offset" ]
+    }
+  }
+}
+output {
+  elasticsearch {
+    hosts => ["http://sparkmaster:9200"]
+    index => "%{[@metadata][beat]}-%{+YYYY.MM.dd}"
+    document_type => "%{[@metadata][type]}"
+  }
+}
+ 
+$ sudo service logstash start
+ 
+## 配置 Beat
+$ vi /etc/filebeat/filebeat.yml
+filebeat.prospectors:
+- type: log
+  enabled: true
+  paths:
+    - /home/ubuntu/spark/logs/*/*/stdout
+  fields:
+    type: spark
+  multiline.pattern: ^\d{2,4}
+  multiline.negate: true
+  multiline.match: after
+filebeat.config.modules:
+  path: ${path.config}/modules.d/*.yml
+  reload.enabled: false
+setup.template.pattern: "filebeat-*"
+setup.template.settings:
+  index.number_of_shards: 3
+  index.number_of_replicas: 0
+setup.kibana:
+  #host: "localhost:5601"
+#output.elasticsearch:
+  #hosts: ["localhost:9200"]
+output.logstash:
+  hosts: ["sparkmaster:5044"]
+ 
+$ sudo service filebeat start
+$ sudo filebeat export template > filebeat.template.json
+ 
+$ curl -XPUT -H 'Content-Type: application/json' http://sparkmaster:9200/_template/filebeat -d@filebeat.template.json
+## 更多参考：https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-template.html#load-template-manually-alternate
+ 
+ 
+## 配置 Kibana
+$ sudo service kibana start
+filebeat-*
