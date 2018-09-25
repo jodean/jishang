@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# 获取随机数
+echo $RANDOM | md5sum | cut -c 1-8
+openssl rand -base84 4
+cat /proc/sys/kernel/random/uuid | cur -c 1-8
+
+echo $RANDOM | cksum | cut -c 1-8
+
+# 批量创建用户
+#!/bin/bash
+DATE=$(date +%F_%T)
+USER_FILE=user.txt
+echo_color(){
+	if [ $1 == "green" ]; then
+		echo -e "\033[32;40m$2\033[0m"
+	elif [ $1 == "red" ]; then
+		echo -e "\033[31;40m$2\033[0m"
+	fi
+}
+## 如果用户文件存在并且大小大于0就备份
+if [ -s $USER_FILE ]; then
+	mv $USER_FILE ${USER_FILE}-$DATE.bak
+	echo_color green "$USER_FILE exit, rename ${USER_FILE}-$DATE.bak"
+fi
+echo -e "User\tPassword" >> $USER_FILE
+echo "------------------" >> $USER_FILE
+for USER in user{1..10}; do 
+	if ! id $USER &> /dev/null; then
+		PASS=$(echo $RANDOM |md5sum| cut -c 1-8)
+		useradd $USER
+		echo $PASS | passwd --stdin $USER &> /dev/null
+		echo -e "$USER\t$PASS" >> $USER_FILE
+		echo "$USER User create successful."
+	else
+		echo_color red "$USER user already exist!"
+	fi
+done
+
+# 检查主机状态
+#!/bin/bash
+pring_success_status(){
+	if ping -c 1 $IP > /dev/null; then
+		echo "$IP ping is successful."
+		continue
+	fi
+}
+IP_LIST="192.168.18.1 192.168.18.11 192.168.18.111"
+for IP in $IP_LIST; do
+	pring_success_status
+	pring_success_status
+	pring_success_status
+	echo "$IP ping is failure!"
+done
