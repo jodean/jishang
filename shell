@@ -52,3 +52,29 @@ for IP in $IP_LIST; do
 	pring_success_status
 	echo "$IP ping is failure!"
 done
+
+
+## 监控CPU负载
+#!/bin/bash
+function GetSysCPU 
+( 
+  CpuIdle=$(vmstat 1 5 |sed -n '3,$p' |awk '{x = x + $15} END {print x/5}' |awk -F. '{print $1}')
+  CpuNum=$(echo "100-$CpuIdle" | bc)
+  echo $CpuNum 
+)
+cpu=$(GetSysCPU)
+ 
+echo "The system CPU is $cpu"
+ 
+if [ $cpu -gt 90 ] 
+then 
+   echo "The usage of system cpu is larger than 90%"
+else 
+   echo "The usage of system cpu is normal"
+fi
+root@zabbix:~# bash cpuload.sh 
+The system CPU is 1
+The usage of system cpu is normal
+
+## 
+
